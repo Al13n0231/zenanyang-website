@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Hands, Results } from '@mediapipe/hands';
+import { Results } from '@mediapipe/hands';
+import * as mpHands from '@mediapipe/hands';
 import { Camera } from '@mediapipe/camera_utils';
 import GUI from 'lil-gui';
 import './App.css';// 确保你有这个文件，或者保留原本的样式引入
@@ -125,7 +126,7 @@ function App() {
         };
 
         const initHandTracking = () => {
-            const hands = new Hands({
+            const hands = new mpHands.Hands({
                 locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
             });
             hands.setOptions({
