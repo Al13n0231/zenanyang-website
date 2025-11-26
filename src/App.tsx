@@ -126,7 +126,17 @@ function App() {
         };
 
         const initHandTracking = () => {
-            const hands = new mpHands.Hands({
+            // --- 终极防御性写法 ---
+            // 这里的逻辑是：如果 mpHands.Hands 存在就用它，否则尝试 mpHands.default.Hands
+            // @ts-ignore
+            const HandsClass = mpHands.Hands || (mpHands.default ? mpHands.default.Hands : null);
+
+            if (!HandsClass) {
+                console.error("无法加载 MediaPipe Hands 类", mpHands);
+                return;
+            }
+
+            const hands = new HandsClass({
                 locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
             });
             hands.setOptions({
