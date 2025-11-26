@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Results } from '@mediapipe/hands';
-import * as mpHands from '@mediapipe/hands';
-import { Camera } from '@mediapipe/camera_utils';
 import GUI from 'lil-gui';
-import './App.css';// 确保你有这个文件，或者保留原本的样式引入
+import './App.css';
 
 function App() {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -14,20 +11,21 @@ function App() {
     useEffect(() => {
         if (!containerRef.current || !videoRef.current) return;
 
-        // --- 变量定义 ---
         let scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer;
         let particlesMesh: THREE.Points;
         let handProgress = 0;
         let animationId: number;
+        let gui: GUI;
+        let cameraUtils: any;
+        let hands: any;
 
-        // 配置
         const config = {
             particleColor: '#00ffff',
             particleSize: 2.0,
             dispersionStrength: 500,
         };
 
-        // --- 1. 初始化 Three.js ---
+        // --- 1. Three.js 初始化 ---
         const initThree = () => {
             scene = new THREE.Scene();
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -37,14 +35,13 @@ function App() {
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-            // 清空容器并添加 canvas
             if (containerRef.current) {
                 containerRef.current.innerHTML = '';
                 containerRef.current.appendChild(renderer.domElement);
             }
         };
 
-        // --- 2. 图像转粒子 (核心逻辑) ---
+        // --- 2. 粒子生成 ---
         const createParticlesFromImage = (imageUrl: string) => {
             const loader = new THREE.TextureLoader();
             loader.load(imageUrl, (texture) => {
@@ -76,8 +73,7 @@ function App() {
                         if (alpha > 128) {
                             const tx = (x - width / 2) * 2;
                             const ty = -(y - height / 2) * 2;
-                            const tz = 0;
-                            targetPositions.push(tx, ty, tz);
+                            targetPositions.push(tx, ty, 0);
 
                             const rx = (Math.random() - 0.5) * config.dispersionStrength * 2;
                             const ry = (Math.random() - 0.5) * config.dispersionStrength * 2;
@@ -107,55 +103,60 @@ function App() {
             });
         };
 
-        // --- 3. 手势识别 ---
-        const onResults = (results: Results) => {
-            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const landmarks = results.multiHandLandmarks[0];
-                const thumbTip = landmarks[4];
-                const indexTip = landmarks[8];
-                const distance = Math.sqrt(
-                    Math.pow(thumbTip.x - indexTip.x, 2) +
-                    Math.pow(thumbTip.y - indexTip.y, 2)
-                );
-
-                // 映射逻辑：捏合=聚合(1)，张开=散开(0)
-                let targetVal = THREE.MathUtils.mapLinear(distance, 0.05, 0.2, 1, 0);
-                targetVal = THREE.MathUtils.clamp(targetVal, 0, 1);
-                handProgress += (targetVal - handProgress) * 0.1;
-            }
-        };
-
+        // --- 3. 手势识别 (使用全局 window 变量) ---
         const initHandTracking = () => {
-            // --- 终极防御性写法 ---
-            // 这里的逻辑是：如果 mpHands.Hands 存在就用它，否则尝试 mpHands.default.Hands
             // @ts-ignore
-            const HandsClass = mpHands.Hands || (mpHands.default ? mpHands.default.Hands : null);
-
-            if (!HandsClass) {
-                console.error("无法加载 MediaPipe Hands 类", mpHands);
+            if (!window.Hands || !window.Camera) {
+                console.error("MediaPipe 脚本未加载完成，请刷新页面");
                 return;
             }
 
-            const hands = new HandsClass({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            // @ts-ignore
+            hands = new window.Hands({
+                locateFile: (file: string) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }
             });
+
             hands.setOptions({
                 maxNumHands: 1,
                 modelComplexity: 1,
                 minDetectionConfidence: 0.5,
                 minTrackingConfidence: 0.5
             });
-            hands.onResults(onResults);
+
+            hands.onResults((results: any) => {
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    const landmarks = results.multiHandLandmarks[0];
+                    const thumbTip = landmarks[4];
+                    const indexTip = landmarks[8];
+                    const distance = Math.sqrt(
+                        Math.pow(thumbTip.x - indexTip.x, 2) +
+                        Math.pow(thumbTip.y - indexTip.y, 2)
+                    );
+
+                    let targetVal = THREE.MathUtils.mapLinear(distance, 0.05, 0.2, 1, 0);
+                    targetVal = THREE.MathUtils.clamp(targetVal, 0, 1);
+                    handProgress += (targetVal - handProgress) * 0.1;
+                }
+            });
 
             if (videoRef.current) {
-                const cameraUtils = new Camera(videoRef.current, {
+                // @ts-ignore
+                cameraUtils = new window.Camera(videoRef.current, {
                     onFrame: async () => {
-                        if(videoRef.current) await hands.send({image: videoRef.current});
+                        if(videoRef.current && hands) await hands.send({image: videoRef.current});
                     },
                     width: 640,
                     height: 480
                 });
-                cameraUtils.start().then(() => setLoading(false));
+
+                cameraUtils.start()
+                    .then(() => {
+                        console.log("摄像头启动成功");
+                        setLoading(false);
+                    })
+                    .catch((e: any) => console.error(e));
             }
         };
 
@@ -178,37 +179,24 @@ function App() {
             renderer.render(scene, camera);
         };
 
-        // --- 5. UI 初始化 ---
         const initGUI = () => {
-            const gui = new GUI();
-            gui.domElement.style.position = 'absolute';
-            gui.domElement.style.top = '10px';
-            gui.domElement.style.right = '10px';
-
+            gui = new GUI();
             gui.addColor(config, 'particleColor').onChange((v: string) => {
                 if (particlesMesh) (particlesMesh.material as THREE.PointsMaterial).color.set(v);
             });
             gui.add(config, 'particleSize', 0.5, 5).onChange((v: number) => {
                 if (particlesMesh) (particlesMesh.material as THREE.PointsMaterial).size = v;
             });
-
-            // 清理 GUI
-            return () => gui.destroy();
         };
 
-        // --- 执行顺序 ---
+        // --- 启动顺序 ---
         initThree();
-
-        // ⚠️ 注意：这里使用 base64 图片作为示例。
-        // 实际项目中，请把图片（如 heart.png）放在 public 文件夹下，然后用 '/heart.png' 引用
-        const base64Atom = '/atom-symbol-silhouette-f35580-xl.png'
-        createParticlesFromImage(base64Atom);
-
+        // 确保你的图片在 public 目录下，名字一致
+        createParticlesFromImage('/atom-symbol-silhouette-f35580-xl.png');
+        initGUI();
         initHandTracking();
-        const cleanupGUI = initGUI();
         animate();
 
-        // 窗口调整
         const handleResize = () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
@@ -216,32 +204,26 @@ function App() {
         };
         window.addEventListener('resize', handleResize);
 
-        // 清理函数
         return () => {
             window.removeEventListener('resize', handleResize);
             cancelAnimationFrame(animationId);
-            cleanupGUI();
-            // 这里可以添加更多 Three.js 资源释放逻辑
+            if(gui) gui.destroy();
+            if(hands) hands.close();
+            if(cameraUtils) cameraUtils.stop();
         };
     }, []);
 
     return (
         <>
-            <div
-                ref={containerRef}
-                style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000' }}
-            />
-            <video
-                ref={videoRef}
-                style={{ display: 'none' }}
-                playsInline
-            />
+            <div ref={containerRef} style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000' }} />
+            <video ref={videoRef} style={{ display: 'none' }} playsInline />
             {loading && (
                 <div style={{
                     position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-                    color: 'white', fontFamily: 'sans-serif', pointerEvents: 'none'
+                    color: 'white', fontFamily: 'sans-serif', pointerEvents: 'none', textAlign: 'center'
                 }}>
-                    正在启动摄像头与模型... (请允许摄像头权限)
+                    <div>正在加载模型...</div>
+                    <div style={{fontSize: '12px', opacity: 0.7}}>如果不消失，请尝试刷新页面</div>
                 </div>
             )}
         </>
