@@ -198,7 +198,7 @@ function App() {
         // --- 启动顺序 ---
         initThree();
         // 确保你的图片在 public 目录下，名字一致
-        createParticlesFromImage('/tesseract-odyssey-scala-altered-state-polaris-geometric-cover.png');
+        createParticlesFromImage('602-6024721_transparent-tesseract-png-puresec-logo-png-download.png');
         initGUI();
         initHandTracking();
         animate();
