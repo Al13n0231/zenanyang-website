@@ -192,7 +192,7 @@ function App() {
         // --- 启动顺序 ---
         initThree();
         // 确保你的图片在 public 目录下，名字一致
-        createParticlesFromImage('/atom-symbol-silhouette-f35580-xl.png');
+        createParticlesFromImage('/tesseract-odyssey-scala-altered-state-polaris-geometric-cover.png');
         initGUI();
         initHandTracking();
         animate();
