@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import GUI from 'lil-gui';
-import './App.css';
+import './App.css'; // 确保这里引入了刚才修改的 CSS
 
 function App() {
     const containerRef = useRef<HTMLDivElement>(null);
@@ -20,7 +20,7 @@ function App() {
         let hands: any;
 
         const config = {
-            particleColor: '#00ffff',
+            particleColor: '#00ffff', // 建议改成跟你的 Logo 匹配的颜色，比如 #00ffff (青色)
             particleSize: 2.0,
             dispersionStrength: 500,
         };
@@ -41,75 +41,91 @@ function App() {
             }
         };
 
-        // --- 2. 粒子生成 ---
+        // --- 2. 粒子生成 (核心逻辑优化版) ---
         const createParticlesFromImage = (imageUrl: string) => {
+            console.log("正在加载图片:", imageUrl); // 调试日志
+
             const loader = new THREE.TextureLoader();
-            loader.load(imageUrl, (texture) => {
-                const img = texture.image;
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                if (!ctx) return;
+            loader.load(
+                imageUrl,
+                (texture) => {
+                    console.log("图片加载成功，开始处理像素...");
+                    const img = texture.image;
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) return;
 
-                const width = 200;
-                const scale = width / img.width;
-                const height = img.height * scale;
+                    // 稍微提高分辨率以获得更清晰的 Logo
+                    const width = 250;
+                    const scale = width / img.width;
+                    const height = img.height * scale;
 
-                canvas.width = width;
-                canvas.height = height;
-                ctx.drawImage(img, 0, 0, width, height);
+                    canvas.width = width;
+                    canvas.height = height;
+                    ctx.drawImage(img, 0, 0, width, height);
 
-                const imgData = ctx.getImageData(0, 0, width, height);
-                const data = imgData.data;
+                    const imgData = ctx.getImageData(0, 0, width, height);
+                    const data = imgData.data;
 
-                const positions: number[] = [];
-                const targetPositions: number[] = [];
-                const initialPositions: number[] = [];
+                    const positions: number[] = [];
+                    const targetPositions: number[] = [];
+                    const initialPositions: number[] = [];
 
-                for (let y = 0; y < height; y++) {
-                    for (let x = 0; x < width; x++) {
-                        const index = (y * width + x) * 4;
-                        const r = data[index];     // 红
-                        const g = data[index + 1]; // 绿
-                        const b = data[index + 2]; // 蓝
-                        const alpha = data[index + 3]; // 透明度
+                    for (let y = 0; y < height; y++) {
+                        for (let x = 0; x < width; x++) {
+                            const index = (y * width + x) * 4;
+                            const r = data[index];
+                            const g = data[index + 1];
+                            const b = data[index + 2];
+                            const alpha = data[index + 3];
 
-                        const isDarkPixel = (r + g + b) < 380;
-                        const isNotTransparent = alpha > 100;
+                            // --- 逻辑修改 ---
+                            // 1. 必须有一定透明度 (alpha > 20)
+                            // 2. 只要不是纯白 (r+g+b < 700) 就可以。
+                            //    纯白是 765。青色是 510。黑色是 0。
+                            //    这样既能过滤白背景，又能保留彩色 Logo。
+                            const isNotWhite = (r + g + b) < 700;
+                            const isVisible = alpha > 50;
 
-                        if (isNotTransparent && isDarkPixel) {
-                            const tx = (x - width / 2) * 2;
-                            const ty = -(y - height / 2) * 2;
-                            targetPositions.push(tx, ty, 0);
+                            if (isVisible && isNotWhite) {
+                                const tx = (x - width / 2) * 2;
+                                const ty = -(y - height / 2) * 2;
+                                targetPositions.push(tx, ty, 0);
 
-                            const rx = (Math.random() - 0.5) * config.dispersionStrength * 2;
-                            const ry = (Math.random() - 0.5) * config.dispersionStrength * 2;
-                            const rz = (Math.random() - 0.5) * config.dispersionStrength * 2;
-                            positions.push(rx, ry, rz);
-                            initialPositions.push(rx, ry, rz);
+                                const rx = (Math.random() - 0.5) * config.dispersionStrength * 2;
+                                const ry = (Math.random() - 0.5) * config.dispersionStrength * 2;
+                                const rz = (Math.random() - 0.5) * config.dispersionStrength * 2;
+                                positions.push(rx, ry, rz);
+                                initialPositions.push(rx, ry, rz);
+                            }
                         }
                     }
+
+                    const geometry = new THREE.BufferGeometry();
+                    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                    geometry.setAttribute('targetPosition', new THREE.Float32BufferAttribute(targetPositions, 3));
+                    geometry.setAttribute('initialPosition', new THREE.Float32BufferAttribute(initialPositions, 3));
+
+                    const material = new THREE.PointsMaterial({
+                        color: new THREE.Color(config.particleColor),
+                        size: config.particleSize,
+                        transparent: true,
+                        opacity: 0.8,
+                        blending: THREE.AdditiveBlending
+                    });
+
+                    if (particlesMesh) scene.remove(particlesMesh);
+                    particlesMesh = new THREE.Points(geometry, material);
+                    scene.add(particlesMesh);
+                },
+                undefined,
+                (err) => {
+                    console.error("图片加载失败，请检查 public 文件夹和文件名:", err);
                 }
-
-                const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-                geometry.setAttribute('targetPosition', new THREE.Float32BufferAttribute(targetPositions, 3));
-                geometry.setAttribute('initialPosition', new THREE.Float32BufferAttribute(initialPositions, 3));
-
-                const material = new THREE.PointsMaterial({
-                    color: new THREE.Color(config.particleColor),
-                    size: config.particleSize,
-                    transparent: true,
-                    opacity: 0.8,
-                    blending: THREE.AdditiveBlending
-                });
-
-                if (particlesMesh) scene.remove(particlesMesh);
-                particlesMesh = new THREE.Points(geometry, material);
-                scene.add(particlesMesh);
-            });
+            );
         };
 
-        // --- 3. 手势识别 (使用全局 window 变量) ---
+        // --- 3. 手势识别 ---
         const initHandTracking = () => {
             // @ts-ignore
             if (!window.Hands || !window.Camera) {
@@ -197,8 +213,12 @@ function App() {
 
         // --- 启动顺序 ---
         initThree();
-        // 确保你的图片在 public 目录下，名字一致
-        createParticlesFromImage('602-6024721_transparent-tesseract-png-puresec-logo-png-download.png');
+
+        // 👇👇👇 关键修改：
+        // 1. 加上了斜杠 '/'
+        // 2. 请确保这个文件真的在 public 文件夹里，并且名字完全一样（不要有空格）
+        createParticlesFromImage('/602-6024721_transparent-tesseract-png-puresec-logo-png-download.png');
+
         initGUI();
         initHandTracking();
         animate();
