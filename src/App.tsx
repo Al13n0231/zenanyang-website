@@ -68,9 +68,15 @@ function App() {
                 for (let y = 0; y < height; y++) {
                     for (let x = 0; x < width; x++) {
                         const index = (y * width + x) * 4;
-                        const alpha = data[index + 3];
+                        const r = data[index];     // 红
+                        const g = data[index + 1]; // 绿
+                        const b = data[index + 2]; // 蓝
+                        const alpha = data[index + 3]; // 透明度
 
-                        if (alpha > 128) {
+                        const isDarkPixel = (r + g + b) < 380;
+                        const isNotTransparent = alpha > 100;
+
+                        if (isNotTransparent && isDarkPixel) {
                             const tx = (x - width / 2) * 2;
                             const ty = -(y - height / 2) * 2;
                             targetPositions.push(tx, ty, 0);
