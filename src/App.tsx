@@ -1,37 +1,140 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import GUI from 'lil-gui';
-import './App.css'; // 确保这里引入了刚才修改的 CSS
+import './App.css';
+
+// --- Shader: 顶点着色器 (处理运动、物理、混沌) ---
+const vertexShader = `
+  uniform float uTime;
+  uniform float uZoom; // 0.0 (远/暗) -> 1.0 (近/亮/混沌)
+  
+  attribute float aSize;
+  attribute float aSpeed;
+  attribute float aAngle;
+  attribute float aRadius;
+  attribute vec3 aRandom; // 用于噪点方向
+  attribute vec3 aColor;
+
+  varying vec3 vColor;
+  varying float vAlpha;
+
+  // 伪随机函数
+  float random (vec2 st) {
+      return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+  }
+
+  void main() {
+    vColor = aColor;
+    
+    // 1. 开普勒轨道运动 (Kepler's Laws)
+    // 速度与半径平方根成反比。uTime * aSpeed 让粒子动起来
+    float currentAngle = aAngle + uTime * aSpeed;
+    
+    vec3 stablePos;
+    stablePos.x = cos(currentAngle) * aRadius;
+    stablePos.z = sin(currentAngle) * aRadius;
+    stablePos.y = 0.0; // 基础是在平面上，如果是球体则是另一套逻辑
+
+    // 如果是球体本体粒子，y轴也有值
+    if (aSpeed == 0.0) { // 标记为本体粒子
+       stablePos = position; 
+       // 让本体也缓慢自转
+       float s = sin(uTime * 0.1);
+       float c = cos(uTime * 0.1);
+       float x = stablePos.x * c - stablePos.z * s;
+       float z = stablePos.x * s + stablePos.z * c;
+       stablePos.x = x;
+       stablePos.z = z;
+    }
+
+    // 2. 交互缩放逻辑
+    // uZoom 越大，粒子越靠近相机 (或者模型放大)
+    float scaleFactor = 0.5 + uZoom * 4.0; // 0.5倍 -> 4.5倍
+    vec3 finalPos = stablePos * scaleFactor;
+
+    // 3. 混沌噪点 (Brownian/Chaos Motion)
+    // 当 uZoom > 0.7 时开始介入，越接近 1.0 越剧烈
+    float chaosThreshold = 0.7;
+    if (uZoom > chaosThreshold) {
+        float chaosStrength = (uZoom - chaosThreshold) / (1.0 - chaosThreshold); // 0 -> 1
+        
+        // 高频震动
+        float timeFreq = uTime * 20.0;
+        vec3 noiseOffset = vec3(
+            sin(timeFreq * aRandom.x),
+            cos(timeFreq * aRandom.y),
+            sin(timeFreq * aRandom.z)
+        );
+        
+        // 粒子炸开效果：位置偏移 + 震动
+        finalPos += noiseOffset * chaosStrength * 2.0 * scaleFactor; 
+        
+        // 打破轨道：稍微打散原始位置
+        finalPos += aRandom * chaosStrength * 5.0 * scaleFactor;
+    }
+
+    vec4 mvPosition = modelViewMatrix * vec4(finalPos, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+
+    // 4. 大小随距离衰减 (透视效果)
+    gl_PointSize = aSize * (300.0 / -mvPosition.z);
+    
+    // 5. 亮度物理规律 (小暗大亮)
+    // 基础亮度 + Zoom增强。模拟光强随距离平方反比 (这里简化为线性增强以获得更好视觉控制)
+    float brightness = 0.2 + pow(uZoom, 1.5) * 2.0; 
+    vAlpha = brightness;
+  }
+`;
+
+// --- Shader: 片元着色器 (处理光泽、形状) ---
+const fragmentShader = `
+  varying vec3 vColor;
+  varying float vAlpha;
+
+  void main() {
+    // 制作圆形软粒子
+    float r = distance(gl_PointCoord, vec2(0.5, 0.5));
+    if (r > 0.5) discard;
+
+    // 辉光效果 (中心亮边缘暗)
+    float glow = 1.0 - (r * 2.0);
+    glow = pow(glow, 1.5); 
+
+    gl_FragColor = vec4(vColor, vAlpha * glow);
+  }
+`;
 
 function App() {
     const containerRef = useRef<HTMLDivElement>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
+    const materialRef = useRef<THREE.ShaderMaterial | null>(null);
     const [loading, setLoading] = useState(true);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+
+    // 平滑过渡用的 ref
+    const targetZoomRef = useRef(0);
+    const currentZoomRef = useRef(0);
 
     useEffect(() => {
         if (!containerRef.current || !videoRef.current) return;
 
         let scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer;
         let particlesMesh: THREE.Points;
-        let handProgress = 0;
         let animationId: number;
-        let gui: GUI;
         let cameraUtils: any;
         let hands: any;
-
-        const config = {
-            particleColor: '#00ffff', // 建议改成跟你的 Logo 匹配的颜色，比如 #00ffff (青色)
-            particleSize: 2.0,
-            dispersionStrength: 500,
-        };
 
         // --- 1. Three.js 初始化 ---
         const initThree = () => {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.z = 300;
+            // 背景深邃宇宙黑
+            scene.background = new THREE.Color('#050505');
+            scene.fog = new THREE.FogExp2(0x050505, 0.002);
 
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 40, 100); // 稍微俯视
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -41,103 +144,137 @@ function App() {
             }
         };
 
-        // --- 2. 粒子生成 (核心逻辑优化版) ---
-        const createParticlesFromImage = (imageUrl: string) => {
-            console.log("正在加载图片:", imageUrl); // 调试日志
+        // --- 2. 创建土星与粒子环 (核心数据生成) ---
+        const createSaturnSystem = () => {
+            const particleCount = 60000; // 6万个粒子，保证极致画面
 
-            const loader = new THREE.TextureLoader();
-            loader.load(
-                imageUrl,
-                (texture) => {
-                    console.log("图片加载成功，开始处理像素...");
-                    const img = texture.image;
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) return;
+            const positions = new Float32Array(particleCount * 3);
+            const sizes = new Float32Array(particleCount);
+            const speeds = new Float32Array(particleCount);
+            const angles = new Float32Array(particleCount);
+            const radii = new Float32Array(particleCount);
+            const randoms = new Float32Array(particleCount * 3);
+            const colors = new Float32Array(particleCount * 3);
 
-                    // 稍微提高分辨率以获得更清晰的 Logo
-                    const width = 250;
-                    const scale = width / img.width;
-                    const height = img.height * scale;
+            const colorPlanet = new THREE.Color('#E0C895'); // 土星米黄色
+            const colorRingInner = new THREE.Color('#C9B086');
+            const colorRingOuter = new THREE.Color('#788691'); // 冰环蓝灰色
 
-                    canvas.width = width;
-                    canvas.height = height;
-                    ctx.drawImage(img, 0, 0, width, height);
+            for (let i = 0; i < particleCount; i++) {
+                let x, y, z, r, speed, angle, size;
+                let color = new THREE.Color();
 
-                    const imgData = ctx.getImageData(0, 0, width, height);
-                    const data = imgData.data;
+                // 30% 的粒子构成土星本体 (球体)
+                if (i < particleCount * 0.3) {
+                    // 球体分布
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos((Math.random() * 2) - 1);
+                    const radius = 15 + Math.random() * 1; // 半径15左右
 
-                    const positions: number[] = [];
-                    const targetPositions: number[] = [];
-                    const initialPositions: number[] = [];
+                    x = radius * Math.sin(phi) * Math.cos(theta);
+                    y = radius * Math.sin(phi) * Math.sin(theta);
+                    z = radius * Math.cos(phi);
 
-                    for (let y = 0; y < height; y++) {
-                        for (let x = 0; x < width; x++) {
-                            const index = (y * width + x) * 4;
-                            const r = data[index];
-                            const g = data[index + 1];
-                            const b = data[index + 2];
-                            const alpha = data[index + 3];
+                    r = 0; // 本体不参与开普勒轨道计算
+                    speed = 0; // 标记为本体
+                    angle = 0;
+                    size = Math.random() * 2.5 + 0.5;
 
-                            // --- 逻辑修改 ---
-                            // 1. 必须有一定透明度 (alpha > 20)
-                            // 2. 只要不是纯白 (r+g+b < 700) 就可以。
-                            //    纯白是 765。青色是 510。黑色是 0。
-                            //    这样既能过滤白背景，又能保留彩色 Logo。
-                            const isNotWhite = (r + g + b) < 700;
-                            const isVisible = alpha > 50;
+                    // 纬度条纹色彩模拟
+                    if (Math.abs(z) < 3) color.set('#D6C298');
+                    else if (Math.abs(z) > 13) color.set('#8C8068');
+                    else color.copy(colorPlanet);
 
-                            if (isVisible && isNotWhite) {
-                                const tx = (x - width / 2) * 2;
-                                const ty = -(y - height / 2) * 2;
-                                targetPositions.push(tx, ty, 0);
+                } else {
+                    // 70% 的粒子构成环 (圆盘)
+                    // 环的半径范围：25 -> 65
+                    // 卡西尼缝 (Cassini Division): 大概在 50-55 之间粒子稀疏
 
-                                const rx = (Math.random() - 0.5) * config.dispersionStrength * 2;
-                                const ry = (Math.random() - 0.5) * config.dispersionStrength * 2;
-                                const rz = (Math.random() - 0.5) * config.dispersionStrength * 2;
-                                positions.push(rx, ry, rz);
-                                initialPositions.push(rx, ry, rz);
-                            }
-                        }
+                    r = 25 + Math.random() * 40;
+
+                    // 制造环缝
+                    if (r > 48 && r < 52) {
+                        if (Math.random() > 0.2) r += 5; // 大部分粒子移出缝隙
                     }
 
-                    const geometry = new THREE.BufferGeometry();
-                    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-                    geometry.setAttribute('targetPosition', new THREE.Float32BufferAttribute(targetPositions, 3));
-                    geometry.setAttribute('initialPosition', new THREE.Float32BufferAttribute(initialPositions, 3));
+                    angle = Math.random() * Math.PI * 2;
 
-                    const material = new THREE.PointsMaterial({
-                        color: new THREE.Color(config.particleColor),
-                        size: config.particleSize,
-                        transparent: true,
-                        opacity: 0.8,
-                        blending: THREE.AdditiveBlending
-                    });
+                    // 基础位置 (Vertex Shader 会重写 x,z)
+                    x = Math.cos(angle) * r;
+                    z = Math.sin(angle) * r;
+                    y = (Math.random() - 0.5) * 0.5; // 环极其薄
 
-                    if (particlesMesh) scene.remove(particlesMesh);
-                    particlesMesh = new THREE.Points(geometry, material);
-                    scene.add(particlesMesh);
-                },
-                undefined,
-                (err) => {
-                    console.error("图片加载失败，请检查 public 文件夹和文件名:", err);
+                    // 开普勒定律模拟：速度 = 根号(GM/r)
+                    // 越近越快
+                    speed = 5.0 / Math.sqrt(r);
+
+                    // 颜色渐变：内圈暖色，外圈冷色
+                    const t = (r - 25) / 40;
+                    color.lerpColors(colorRingInner, colorRingOuter, t);
+
+                    size = Math.random() * 1.5 + 0.2;
                 }
-            );
+
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+
+                sizes[i] = size;
+                speeds[i] = speed;
+                angles[i] = angle;
+                radii[i] = r;
+
+                colors[i * 3] = color.r;
+                colors[i * 3 + 1] = color.g;
+                colors[i * 3 + 2] = color.b;
+
+                // 随机噪点方向 (用于混沌模式)
+                randoms[i * 3] = (Math.random() - 0.5);
+                randoms[i * 3 + 1] = (Math.random() - 0.5);
+                randoms[i * 3 + 2] = (Math.random() - 0.5);
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+            geometry.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
+            geometry.setAttribute('aAngle', new THREE.BufferAttribute(angles, 1));
+            geometry.setAttribute('aRadius', new THREE.BufferAttribute(radii, 1));
+            geometry.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 3));
+            geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+
+            const material = new THREE.ShaderMaterial({
+                vertexShader,
+                fragmentShader,
+                uniforms: {
+                    uTime: { value: 0 },
+                    uZoom: { value: 0 },
+                },
+                transparent: true,
+                depthWrite: false, // 粒子不需要遮挡，增强发光感
+                blending: THREE.AdditiveBlending // 叠加发光
+            });
+
+            materialRef.current = material;
+            particlesMesh = new THREE.Points(geometry, material);
+
+            // 整体倾斜土星，展示更美的角度
+            particlesMesh.rotation.z = 25 * (Math.PI / 180);
+            particlesMesh.rotation.x = 10 * (Math.PI / 180);
+
+            scene.add(particlesMesh);
         };
 
         // --- 3. 手势识别 ---
         const initHandTracking = () => {
             // @ts-ignore
             if (!window.Hands || !window.Camera) {
-                console.error("MediaPipe 脚本未加载完成，请刷新页面");
+                console.error("MediaPipe 未加载，请确保 index.html 引入了 CDN");
                 return;
             }
-
             // @ts-ignore
             hands = new window.Hands({
-                locateFile: (file: string) => {
-                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-                }
+                locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`
             });
 
             hands.setOptions({
@@ -149,17 +286,20 @@ function App() {
 
             hands.onResults((results: any) => {
                 if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                    const landmarks = results.multiHandLandmarks[0];
-                    const thumbTip = landmarks[4];
-                    const indexTip = landmarks[8];
-                    const distance = Math.sqrt(
-                        Math.pow(thumbTip.x - indexTip.x, 2) +
-                        Math.pow(thumbTip.y - indexTip.y, 2)
-                    );
+                    const lm = results.multiHandLandmarks[0];
+                    // 计算拇指(4)和食指(8)的距离
+                    const d = Math.sqrt(Math.pow(lm[4].x - lm[8].x, 2) + Math.pow(lm[4].y - lm[8].y, 2));
 
-                    let targetVal = THREE.MathUtils.mapLinear(distance, 0.05, 0.2, 1, 0);
-                    targetVal = THREE.MathUtils.clamp(targetVal, 0, 1);
-                    handProgress += (targetVal - handProgress) * 0.1;
+                    // 映射距离到 Zoom
+                    // 距离通常在 0.02 (闭合) 到 0.25 (张开) 之间
+                    // 我们希望：张开(大) -> Zoom=1.0, 闭合(小) -> Zoom=0.0
+                    let val = THREE.MathUtils.mapLinear(d, 0.03, 0.2, 0, 1);
+                    val = THREE.MathUtils.clamp(val, 0, 1);
+
+                    targetZoomRef.current = val;
+                } else {
+                    // 手移开时，缓慢回到中间状态或最小状态，看你喜好
+                    targetZoomRef.current = targetZoomRef.current * 0.95;
                 }
             });
 
@@ -169,16 +309,9 @@ function App() {
                     onFrame: async () => {
                         if(videoRef.current && hands) await hands.send({image: videoRef.current});
                     },
-                    width: 640,
-                    height: 480
+                    width: 640, height: 480
                 });
-
-                cameraUtils.start()
-                    .then(() => {
-                        console.log("摄像头启动成功");
-                        setLoading(false);
-                    })
-                    .catch((e: any) => console.error(e));
+                cameraUtils.start().then(() => setLoading(false));
             }
         };
 
@@ -186,42 +319,21 @@ function App() {
         const animate = () => {
             animationId = requestAnimationFrame(animate);
 
-            if (particlesMesh) {
-                const positions = particlesMesh.geometry.attributes.position.array as Float32Array;
-                const initial = particlesMesh.geometry.attributes.initialPosition.array as Float32Array;
-                const target = particlesMesh.geometry.attributes.targetPosition.array as Float32Array;
+            // 平滑 Zoom 数值 (Lerp)
+            currentZoomRef.current += (targetZoomRef.current - currentZoomRef.current) * 0.08;
 
-                particlesMesh.rotation.y += 0.002;
-
-                for (let i = 0; i < positions.length; i++) {
-                    positions[i] = initial[i] + (target[i] - initial[i]) * handProgress;
-                }
-                particlesMesh.geometry.attributes.position.needsUpdate = true;
+            if (materialRef.current) {
+                materialRef.current.uniforms.uTime.value += 0.005; // 时间流速
+                materialRef.current.uniforms.uZoom.value = currentZoomRef.current;
             }
+
+            // 稍微缓慢旋转整个场景，增加动态感
+            if (particlesMesh) {
+                particlesMesh.rotation.y += 0.0005;
+            }
+
             renderer.render(scene, camera);
         };
-
-        const initGUI = () => {
-            gui = new GUI();
-            gui.addColor(config, 'particleColor').onChange((v: string) => {
-                if (particlesMesh) (particlesMesh.material as THREE.PointsMaterial).color.set(v);
-            });
-            gui.add(config, 'particleSize', 0.5, 5).onChange((v: number) => {
-                if (particlesMesh) (particlesMesh.material as THREE.PointsMaterial).size = v;
-            });
-        };
-
-        // --- 启动顺序 ---
-        initThree();
-
-        // 👇👇👇 关键修改：
-        // 1. 加上了斜杠 '/'
-        // 2. 请确保这个文件真的在 public 文件夹里，并且名字完全一样（不要有空格）
-        createParticlesFromImage('/602-6024721_transparent-tesseract-png-puresec-logo-png-download.png');
-
-        initGUI();
-        initHandTracking();
-        animate();
 
         const handleResize = () => {
             camera.aspect = window.innerWidth / window.innerHeight;
@@ -230,29 +342,57 @@ function App() {
         };
         window.addEventListener('resize', handleResize);
 
+        // 启动
+        initThree();
+        createSaturnSystem();
+        initHandTracking();
+        animate();
+
         return () => {
             window.removeEventListener('resize', handleResize);
             cancelAnimationFrame(animationId);
-            if(gui) gui.destroy();
             if(hands) hands.close();
             if(cameraUtils) cameraUtils.stop();
         };
     }, []);
 
+    // 全屏切换
+    const toggleFullscreen = () => {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen();
+            setIsFullscreen(true);
+        } else {
+            document.exitFullscreen();
+            setIsFullscreen(false);
+        }
+    };
+
     return (
-        <>
-            <div ref={containerRef} style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000' }} />
+        <div className="app-container">
+            <div ref={containerRef} className="canvas-wrapper" />
             <video ref={videoRef} style={{ display: 'none' }} playsInline />
+
             {loading && (
-                <div style={{
-                    position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-                    color: 'white', fontFamily: 'sans-serif', pointerEvents: 'none', textAlign: 'center'
-                }}>
-                    <div>正在加载模型...</div>
-                    <div style={{fontSize: '12px', opacity: 0.7}}>如果不消失，请尝试刷新页面</div>
+                <div className="loading-overlay">
+                    <div className="loader"></div>
+                    <p>SYSTEM INITIALIZING...</p>
+                    <small>Accessing Neural Link (Camera)</small>
                 </div>
             )}
-        </>
+
+            <div className="ui-layer">
+                <div className="header">
+                    <h1>KEPLER-SATURN</h1>
+                    <div className="status">
+                        <span className="dot"></span> LIVE TRACKING
+                    </div>
+                </div>
+
+                <button className="fullscreen-btn" onClick={toggleFullscreen}>
+                    {isFullscreen ? 'EXIT FULLSCREEN' : 'ENTER IMMERSION'}
+                </button>
+            </div>
+        </div>
     );
 }
 

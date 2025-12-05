@@ -1,14 +1,135 @@
-/* 强制去除浏览器默认边距 */
+/* 全局重置 */
 body, html, #root {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden; /* 禁止出现滚动条 */
-  background-color: #000; /* 防止加载时出现白屏闪烁 */
+  overflow: hidden;
+  background-color: #000;
+  font-family: 'Courier New', Courier, monospace; /* 科幻风格字体 */
 }
 
-/* 确保 Canvas 也是全屏 */
-canvas {
-  display: block; /* 去除 canvas底部的微小空隙 */
+.app-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+.canvas-wrapper {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+/* UI 层级 */
+.ui-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  pointer-events: none; /* 让鼠标事件穿透到 Canvas */
+  padding: 40px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+/* 顶部标题栏 */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 20px;
+}
+
+h1 {
+  color: #fff;
+  font-size: 24px;
+  letter-spacing: 4px;
+  font-weight: 300;
+  margin: 0;
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.status {
+  color: #00ffff;
+  font-size: 12px;
+  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  background-color: #00ffff;
+  border-radius: 50%;
+  margin-right: 10px;
+  box-shadow: 0 0 10px #00ffff;
+  animation: pulse 1.5s infinite;
+}
+
+/* 底部全屏按钮 */
+.fullscreen-btn {
+  pointer-events: auto; /* 恢复按钮点击 */
+  align-self: flex-end;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
+  padding: 15px 30px;
+  font-family: inherit;
+  letter-spacing: 2px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(5px);
+}
+
+.fullscreen-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: #00ffff;
+  color: #00ffff;
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.3);
+}
+
+/* 加载动画 */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 20;
+  color: #00ffff;
+  letter-spacing: 3px;
+}
+
+.loader {
+  width: 50px;
+  height: 50px;
+  border: 2px solid rgba(0, 255, 255, 0.2);
+  border-top: 2px solid #00ffff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 20px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.3; }
+  100% { opacity: 1; }
 }
